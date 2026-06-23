@@ -1,100 +1,200 @@
-# Interview Prep: MTA using Correlated Oblivious Transfer
+The protocol runs one OT per bit.
 
-This project is a TCP/IP client-server demo that converts multiplicative shares into additive shares using Correlated Oblivious Transfer (COT), following Appendix A.3.1, A.3.2, and A.3.3 of `COT.pdf`.
+For each bit `i`:
 
-Think of the whole project as this story:
-
-- Alice is the Node.js/TypeScript client.
-- Bob is the C++ server.
-- Alice owns a random secret number `x`.
-- Bob owns a random secret number `y`.
-- They want to produce two new numbers `U` and `V` such that:
+1. Alice picks random `Ui`.
+2. Alice prepares:
 
 ```text
-U + V = x * y   modulo secp256k1_order
+m0 = Ui
+m1 = Ui + x
 ```
 
-Alice gets `U`. Bob gets `V`. Together, their additive shares reconstruct the product, but the protocol demonstrates how the product can be split without directly computing it in one place during the COT loop.
-
-## One-minute interview explanation
-
-"I built a TCP/IP client-server implementation of multiplicative-to-additive share conversion using correlated oblivious transfer. The server is C++ using Boost.Asio for networking, nanopb for protobuf encoding, and trezor-crypto for secp256k1 operations. The client is Node.js/TypeScript using `net`, `crypto`, and protobufjs. Both sides generate 32-byte scalar values modulo the secp256k1 curve order. The protocol runs 256 OT rounds, one for each bit of Bob's scalar `y`. In each round, Alice prepares two correlated messages, `Ui` and `Ui + x`, and Bob obliviously receives only the one selected by bit `yi`. Bob accumulates weighted selected messages to get `V`, and Alice accumulates the negative weighted sum of `Ui` to get `U`. At the end, `U + V` equals `x * y` modulo the curve order."
-
-## Why this exists
-
-In secure multi-party computation, parties often hold secret shares instead of raw values. Sometimes a protocol gives values in multiplicative form, but another protocol needs additive form.
-
-Multiplicative sharing means:
+3. Bob uses bit `yi` as his OT choice.
+4. Bob receives:
 
 ```text
-secret = x * y
+mci = Ui + yi * x
 ```
 
-Additive sharing means:
+5. Alice accumulates:
 
 ```text
-secret = U + V
+sumU += 2^i * Ui
 ```
 
-This project converts from the first style to the second.
-
-Small example without crypto:
+6. Bob accumulates:
 
 ```text
-x = 7
-y = 5
-x * y = 35
-
-Choose U = 12
-Then V = 23
-
-U + V = 12 + 23 = 35
+V += 2^i * mci
 ```
 
-The real protocol does this modulo a huge secp256k1 number, and it uses COT so the split can be produced round by round.
-
-## Concepts from zero
-
-### Modular arithmetic
-
-Modulo means numbers wrap around after a maximum value.
-
-Clock example:
+At the end:
 
 ```text
-10 + 5 on a 12-hour clock = 3
+Alice returns U = -sumU
+Bob returns V = sum over 2^i * (Ui + yi * x)
 ```
 
-because after 12, the clock wraps back to 1.
-
-Crypto uses this idea with very large numbers. In this project, all scalar math is done modulo the secp256k1 curve order:
+Now expand Bob's value gently:
 
 ```text
-n = FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+V = sum(2^i * Ui) + x * sum(2^i * yi)
 ```
 
-So every scalar is kept inside:
+But:
 
 ```text
-0 <= scalar < n
+sum(2^i * yi) = y
 ```
 
-### Elliptic curve
-
-An elliptic curve is a set of points obeying a curve rule. For secp256k1, the rough shape is defined by:
+So:
 
 ```text
-y^2 = x^3 + 7
+V = sumU + x * y
 ```
 
-You do not need to draw it in the interview. The important idea is:
-
-- There is a special starting point called `G`.
-- If you multiply `G` by a secret number `a`, you get a public point `A`.
-- Going from `a` to `A` is easy.
-- Going from `A` back to `a` is believed to be infeasible.
-
-Toy analogy:
+Alice has:
 
 ```text
-private number a = secret jump count
+U = -sumU
+```
+
+Therefore:
+
+```text
+U + V = -sumU + sumU + x*y = x*y
+```
+
+That cancellation is the main math story.
+
+## Protocol flow in this code
+
+### Startup
+
+1. Start C++ server.
+2. Server listens on TCP port `9100`.
+3. Start TypeScript client.
+4. Client connects to server.
+
+### Handshake
+
+1. Server generates multiplicative share `y`.
+2. Server sends `y` to client.
+3. Client generates multiplicative share `x`.
+4. Client sends `x` to server.
+
+Note: For a real privacy-preserving system, parties would not reveal secret shares like this. In this assignment, the exchange is used so both sides can verify the result.
+
+### 256 COT rounds
+
+For every bit of Bob's `y`:
+
+1. Alice sends point `A = aG`.
+2. Bob chooses based on bit `yi`.
+3. Bob sends point `B`.
+4. Alice derives two keys `k0` and `k1`.
+5. Alice encrypts `m0` and `m1`.
+6. Bob derives only the matching key and decrypts only the chosen message.
+7. Both sides accumulate their weighted sums.
+
+### Completion
+
+1. Alice computes additive share `U`.
+2. Bob computes additive share `V`.
+3. They exchange final shares for demo verification.
+4. Both check:
+
+```text
+U + V == x * y mod n
+```
+
+## File-by-file map
+
+### `README.md`
+
+Explains build steps, run commands, expected output, and the Appendix A.3 protocol summary.
+
+Use this in interviews as the project overview.
+
+### `proto/mta.proto`
+
+Defines all protobuf messages exchanged over the wire:
+
+- `Handshake`: carries a 32-byte multiplicative share.
+- `OtAliceStep1`: carries Alice's compressed curve point `A`.
+- `OtBobStep2`: carries Bob's compressed curve point `B`.
+- `OtAliceStep3`: carries encrypted `m0` and `m1`.
+- `RunComplete`: carries final additive share.
+- `Envelope`: defined, but the implementation uses a simpler manual type byte on the wire.
+
+### `proto/mta.options`
+
+Used by nanopb to generate fixed-size byte arrays for C/C++. This avoids dynamic allocation for fixed-size fields like 32-byte scalars and 33-byte compressed points.
+
+### `client/src/main.ts`
+
+Alice's entry point.
+
+Responsibilities:
+
+- Connect to the server.
+- Generate random scalar `x`.
+- Receive server's `y`.
+- Send `x`.
+- Run COT sender logic.
+- Print additive share `U`.
+- Verify `U + V == x*y`.
+
+### `client/src/cot/cot_sender.ts`
+
+Alice's COT sender implementation.
+
+Important logic:
+
+- Runs 256 OT rounds.
+- Creates `Ui`.
+- Creates correlated messages:
+
+```text
+m0 = Ui
+m1 = Ui + x
+```
+
+- Derives two encryption keys using ECDH-style curve operations.
+- Sends encrypted messages.
+- Accumulates Alice's final negative share.
+
+### `client/src/cot/field.ts`
+
+Client-side scalar arithmetic.
+
+Responsibilities:
+
+- Generate 32-byte random scalars.
+- Convert buffers to `bigint`.
+- Add, subtract, negate, and multiply modulo secp256k1 order.
+- Compute `2^i`.
+- Accumulate weighted sums.
+
+### `client/src/crypto/secp256k1.ts`
+
+Minimal TypeScript implementation of secp256k1 point operations needed by the client.
+
+Responsibilities:
+
+- Curve constants `P`, `N`, `Gx`, `Gy`.
+- Point addition.
+- Point doubling.
+- Scalar multiplication.
+- Point compression and decompression.
+- SHA-256 key derivation from point x-coordinate.
+- XOR encryption/decryption helper.
+
+Interview phrasing:
+
+"The client uses Node's `crypto` module for randomness and SHA-256, and implements the small amount of curve arithmetic needed for the assignment in TypeScript. For production, I would prefer a reviewed constant-time secp256k1 library."
+
+### `client/src/net/peer.ts`
+
+Client networking and protobuf framing.
