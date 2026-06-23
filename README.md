@@ -1,70 +1,100 @@
-# Getting Started with Create React App
+# Interview Prep: MTA using Correlated Oblivious Transfer
 
-This project was bootstrapped with [Create React App](https://github.com/facebook/create-react-app).
+This project is a TCP/IP client-server demo that converts multiplicative shares into additive shares using Correlated Oblivious Transfer (COT), following Appendix A.3.1, A.3.2, and A.3.3 of `COT.pdf`.
 
-## Available Scripts
+Think of the whole project as this story:
 
-In the project directory, you can run:
+- Alice is the Node.js/TypeScript client.
+- Bob is the C++ server.
+- Alice owns a random secret number `x`.
+- Bob owns a random secret number `y`.
+- They want to produce two new numbers `U` and `V` such that:
 
-### `npm start`
+```text
+U + V = x * y   modulo secp256k1_order
+```
 
-Runs the app in the development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+Alice gets `U`. Bob gets `V`. Together, their additive shares reconstruct the product, but the protocol demonstrates how the product can be split without directly computing it in one place during the COT loop.
 
-The page will reload when you make changes.\
-You may also see any lint errors in the console.
+## One-minute interview explanation
 
-### `npm test`
+"I built a TCP/IP client-server implementation of multiplicative-to-additive share conversion using correlated oblivious transfer. The server is C++ using Boost.Asio for networking, nanopb for protobuf encoding, and trezor-crypto for secp256k1 operations. The client is Node.js/TypeScript using `net`, `crypto`, and protobufjs. Both sides generate 32-byte scalar values modulo the secp256k1 curve order. The protocol runs 256 OT rounds, one for each bit of Bob's scalar `y`. In each round, Alice prepares two correlated messages, `Ui` and `Ui + x`, and Bob obliviously receives only the one selected by bit `yi`. Bob accumulates weighted selected messages to get `V`, and Alice accumulates the negative weighted sum of `Ui` to get `U`. At the end, `U + V` equals `x * y` modulo the curve order."
 
-Launches the test runner in the interactive watch mode.\
-See the section about [running tests](https://facebook.github.io/create-react-app/docs/running-tests) for more information.
+## Why this exists
 
-### `npm run build`
+In secure multi-party computation, parties often hold secret shares instead of raw values. Sometimes a protocol gives values in multiplicative form, but another protocol needs additive form.
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+Multiplicative sharing means:
 
-The build is minified and the filenames include the hashes.\
-Your app is ready to be deployed!
+```text
+secret = x * y
+```
 
-See the section about [deployment](https://facebook.github.io/create-react-app/docs/deployment) for more information.
+Additive sharing means:
 
-### `npm run eject`
+```text
+secret = U + V
+```
 
-**Note: this is a one-way operation. Once you `eject`, you can't go back!**
+This project converts from the first style to the second.
 
-If you aren't satisfied with the build tool and configuration choices, you can `eject` at any time. This command will remove the single build dependency from your project.
+Small example without crypto:
 
-Instead, it will copy all the configuration files and the transitive dependencies (webpack, Babel, ESLint, etc) right into your project so you have full control over them. All of the commands except `eject` will still work, but they will point to the copied scripts so you can tweak them. At this point you're on your own.
+```text
+x = 7
+y = 5
+x * y = 35
 
-You don't have to ever use `eject`. The curated feature set is suitable for small and middle deployments, and you shouldn't feel obligated to use this feature. However we understand that this tool wouldn't be useful if you couldn't customize it when you are ready for it.
+Choose U = 12
+Then V = 23
 
-## Learn More
+U + V = 12 + 23 = 35
+```
 
-You can learn more in the [Create React App documentation](https://facebook.github.io/create-react-app/docs/getting-started).
+The real protocol does this modulo a huge secp256k1 number, and it uses COT so the split can be produced round by round.
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+## Concepts from zero
 
-### Code Splitting
+### Modular arithmetic
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
+Modulo means numbers wrap around after a maximum value.
 
-### Analyzing the Bundle Size
+Clock example:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
+```text
+10 + 5 on a 12-hour clock = 3
+```
 
-### Making a Progressive Web App
+because after 12, the clock wraps back to 1.
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
+Crypto uses this idea with very large numbers. In this project, all scalar math is done modulo the secp256k1 curve order:
 
-### Advanced Configuration
+```text
+n = FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
+So every scalar is kept inside:
 
-### Deployment
+```text
+0 <= scalar < n
+```
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
+### Elliptic curve
 
-### `npm run build` fails to minify
+An elliptic curve is a set of points obeying a curve rule. For secp256k1, the rough shape is defined by:
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+```text
+y^2 = x^3 + 7
+```
+
+You do not need to draw it in the interview. The important idea is:
+
+- There is a special starting point called `G`.
+- If you multiply `G` by a secret number `a`, you get a public point `A`.
+- Going from `a` to `A` is easy.
+- Going from `A` back to `a` is believed to be infeasible.
+
+Toy analogy:
+
+```text
+private number a = secret jump count
